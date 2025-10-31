@@ -4,6 +4,17 @@
 #include <X11/Xlib.h>
 #include <GL/glx.h>
 #endif
+#if defined(_WIN32) && defined(XR_USE_GRAPHICS_API_OPENGL)
+#include <Windows.h>
+#include <wingdi.h>
+#pragma comment(lib, "opengl32.lib")
+// Forward declarations to ensure visibility
+static bool create_hidden_wgl_context();
+static void destroy_hidden_wgl_context();
+static HWND  g_cli_gl_hwnd = nullptr;
+static HDC   g_cli_gl_hdc  = nullptr;
+static HGLRC g_cli_gl_hrc  = nullptr;
+#endif
 #if defined(XR_USE_GRAPHICS_API_D3D11)
 #include <d3d11.h>
 #include <dxgi1_2.h>
@@ -120,6 +131,9 @@ void openxr_info_release() {
 #if defined(XR_USE_GRAPHICS_API_D3D12)
 	if (g_cli_d3d12_queue) { g_cli_d3d12_queue->Release(); g_cli_d3d12_queue = nullptr; }
 	if (g_cli_d3d12_device) { g_cli_d3d12_device->Release(); g_cli_d3d12_device = nullptr; }
+#endif
+#if defined(_WIN32) && defined(XR_USE_GRAPHICS_API_OPENGL)
+	destroy_hidden_wgl_context();
 #endif
 
 	xr_session      = XR_NULL_HANDLE;
@@ -331,25 +345,47 @@ void openxr_init_session(xr_settings_t settings) {
 #endif
 #if defined(SKG_OPENGL) && defined(_WIN32)
 		if (!binding_ptr && (settings.graphics_preference == xr_gfx_auto || settings.graphics_preference == xr_gfx_opengl)) {
-			XrGraphicsBindingOpenGLKHR *binding = new XrGraphicsBindingOpenGLKHR{ XR_TYPE_GRAPHICS_BINDING_OPENGL_KHR };
+			// Satisfy OpenGL graphics requirements per XR_KHR_opengl_enable
+			PFN_xrGetOpenGLGraphicsRequirementsKHR ext_xrGetOpenGLGraphicsRequirementsKHR = nullptr;
+			XrGraphicsRequirementsOpenGLKHR        requirement = { XR_TYPE_GRAPHICS_REQUIREMENTS_OPENGL_KHR };
+			xrGetInstanceProcAddr(xr_instance, "xrGetOpenGLGraphicsRequirementsKHR", (PFN_xrVoidFunction *)(&ext_xrGetOpenGLGraphicsRequirementsKHR));
+			if (ext_xrGetOpenGLGraphicsRequirementsKHR) {
+				ext_xrGetOpenGLGraphicsRequirementsKHR(xr_instance, xr_system_id, &requirement);
+			}
+
+			XrGraphicsBindingOpenGLWin32KHR *binding = new XrGraphicsBindingOpenGLWin32KHR{ XR_TYPE_GRAPHICS_BINDING_OPENGL_WIN32_KHR };
 			binding->hDC   = (HDC  )platform._gl_hdc;
 			binding->hGLRC = (HGLRC)platform._gl_hrc;
+			// If skg didn't provide an OpenGL context, create a hidden one
+			if (!binding->hGLRC || !binding->hDC) {
+#if defined(_WIN32) && defined(XR_USE_GRAPHICS_API_OPENGL)
+				if (create_hidden_wgl_context()) {
+					binding->hDC   = g_cli_gl_hdc;
+					binding->hGLRC = g_cli_gl_hrc;
+				}
+#endif
+			}
 			binding_ptr = binding;
 		}
 #endif
-#if defined(SKG_OPENGL) && defined(__linux__)
+#if !defined(SKG_OPENGL) && defined(_WIN32) && defined(XR_USE_GRAPHICS_API_OPENGL)
 		if (!binding_ptr && (settings.graphics_preference == xr_gfx_auto || settings.graphics_preference == xr_gfx_opengl)) {
-			PFN_xrGetOpenGLGraphicsRequirementsKHR ext_xrGetOpenGLGraphicsRequirementsKHR;
+			// Satisfy OpenGL graphics requirements per XR_KHR_opengl_enable
+			PFN_xrGetOpenGLGraphicsRequirementsKHR ext_xrGetOpenGLGraphicsRequirementsKHR = nullptr;
 			XrGraphicsRequirementsOpenGLKHR        requirement = { XR_TYPE_GRAPHICS_REQUIREMENTS_OPENGL_KHR };
-			XrGraphicsBindingOpenGLXlibKHR         *binding = new XrGraphicsBindingOpenGLXlibKHR{ XR_TYPE_GRAPHICS_BINDING_OPENGL_XLIB_KHR };
-			binding->xDisplay    = (Display*  )platform._x_display;
-			binding->visualid    = *(uint32_t *)platform._visual_id;
-			binding->glxFBConfig = (GLXFBConfig)platform._glx_fb_config;
-			binding->glxDrawable = (GLXDrawable)platform._glx_drawable;
-			binding->glxContext  = (GLXContext )platform._glx_context;
 			xrGetInstanceProcAddr(xr_instance, "xrGetOpenGLGraphicsRequirementsKHR", (PFN_xrVoidFunction *)(&ext_xrGetOpenGLGraphicsRequirementsKHR));
-			ext_xrGetOpenGLGraphicsRequirementsKHR(xr_instance, xr_system_id, &requirement);
-			binding_ptr = binding;
+			if (ext_xrGetOpenGLGraphicsRequirementsKHR) {
+				ext_xrGetOpenGLGraphicsRequirementsKHR(xr_instance, xr_system_id, &requirement);
+			}
+
+			XrGraphicsBindingOpenGLWin32KHR *binding = new XrGraphicsBindingOpenGLWin32KHR{ XR_TYPE_GRAPHICS_BINDING_OPENGL_WIN32_KHR };
+			if (create_hidden_wgl_context()) {
+				binding->hDC   = g_cli_gl_hdc;
+				binding->hGLRC = g_cli_gl_hrc;
+				binding_ptr = binding;
+			} else {
+				delete binding;
+			}
 		}
 #endif
 		if (!binding_ptr && !has_headless) { xr_session_err = "Requested graphics backend not available in this build"; return; }
@@ -371,7 +407,7 @@ void openxr_init_session(xr_settings_t settings) {
 		if (((XrBaseInStructure*)binding_ptr)->type == XR_TYPE_GRAPHICS_BINDING_D3D12_KHR) delete (XrGraphicsBindingD3D12KHR*)binding_ptr;
 #endif
 #if defined(SKG_OPENGL) && defined(_WIN32)
-		if (((XrBaseInStructure*)binding_ptr)->type == XR_TYPE_GRAPHICS_BINDING_OPENGL_KHR) delete (XrGraphicsBindingOpenGLKHR*)binding_ptr;
+		if (((XrBaseInStructure*)binding_ptr)->type == XR_TYPE_GRAPHICS_BINDING_OPENGL_WIN32_KHR) delete (XrGraphicsBindingOpenGLWin32KHR*)binding_ptr;
 #endif
 #if defined(SKG_OPENGL) && defined(__linux__)
 		if (((XrBaseInStructure*)binding_ptr)->type == XR_TYPE_GRAPHICS_BINDING_OPENGL_XLIB_KHR) delete (XrGraphicsBindingOpenGLXlibKHR*)binding_ptr;
@@ -962,5 +998,49 @@ static ID3D12Device* create_d3d12_device_for_luid(LUID luid) {
 	HRESULT hr = D3D12CreateDevice(match, D3D_FEATURE_LEVEL_11_0, __uuidof(ID3D12Device), (void**)&dev);
 	match->Release();
 	return SUCCEEDED(hr) ? dev : nullptr;
+}
+#endif
+
+#if defined(_WIN32) && defined(XR_USE_GRAPHICS_API_OPENGL)
+static bool create_hidden_wgl_context() {
+	if (g_cli_gl_hrc && g_cli_gl_hdc && g_cli_gl_hwnd) return true;
+	HINSTANCE hinst = GetModuleHandleA(nullptr);
+	const char* cls = "OpenXRExplorerHiddenGL";
+	WNDCLASSA wc = {};
+	wc.style         = CS_OWNDC;
+	wc.lpfnWndProc   = DefWindowProcA;
+	wc.hInstance     = hinst;
+	wc.lpszClassName = cls;
+	if (!GetClassInfoA(hinst, cls, &wc)) {
+		if (!RegisterClassA(&wc)) return false;
+	}
+	g_cli_gl_hwnd = CreateWindowExA(0, cls, "", WS_OVERLAPPEDWINDOW,
+		CW_USEDEFAULT, CW_USEDEFAULT, 1, 1, nullptr, nullptr, hinst, nullptr);
+	if (!g_cli_gl_hwnd) return false;
+	g_cli_gl_hdc = GetDC(g_cli_gl_hwnd);
+	if (!g_cli_gl_hdc) { DestroyWindow(g_cli_gl_hwnd); g_cli_gl_hwnd = nullptr; return false; }
+
+	PIXELFORMATDESCRIPTOR pfd = {};
+	pfd.nSize      = sizeof(pfd);
+	pfd.nVersion   = 1;
+	pfd.dwFlags    = PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER;
+	pfd.iPixelType = PFD_TYPE_RGBA;
+	pfd.cColorBits = 32;
+	pfd.cDepthBits = 24;
+	pfd.iLayerType = PFD_MAIN_PLANE;
+	int pf = ChoosePixelFormat(g_cli_gl_hdc, &pfd);
+	if (pf == 0) { ReleaseDC(g_cli_gl_hwnd, g_cli_gl_hdc); DestroyWindow(g_cli_gl_hwnd); g_cli_gl_hdc=nullptr; g_cli_gl_hwnd=nullptr; return false; }
+	if (!SetPixelFormat(g_cli_gl_hdc, pf, &pfd)) { ReleaseDC(g_cli_gl_hwnd, g_cli_gl_hdc); DestroyWindow(g_cli_gl_hwnd); g_cli_gl_hdc=nullptr; g_cli_gl_hwnd=nullptr; return false; }
+
+	g_cli_gl_hrc = wglCreateContext(g_cli_gl_hdc);
+	if (!g_cli_gl_hrc) { ReleaseDC(g_cli_gl_hwnd, g_cli_gl_hdc); DestroyWindow(g_cli_gl_hwnd); g_cli_gl_hdc=nullptr; g_cli_gl_hwnd=nullptr; return false; }
+	if (!wglMakeCurrent(g_cli_gl_hdc, g_cli_gl_hrc)) { wglDeleteContext(g_cli_gl_hrc); g_cli_gl_hrc=nullptr; ReleaseDC(g_cli_gl_hwnd, g_cli_gl_hdc); DestroyWindow(g_cli_gl_hwnd); g_cli_gl_hdc=nullptr; g_cli_gl_hwnd=nullptr; return false; }
+	return true;
+}
+
+static void destroy_hidden_wgl_context() {
+	if (g_cli_gl_hrc) { wglMakeCurrent(nullptr, nullptr); wglDeleteContext(g_cli_gl_hrc); g_cli_gl_hrc = nullptr; }
+	if (g_cli_gl_hdc && g_cli_gl_hwnd) { ReleaseDC(g_cli_gl_hwnd, g_cli_gl_hdc); g_cli_gl_hdc = nullptr; }
+	if (g_cli_gl_hwnd) { DestroyWindow(g_cli_gl_hwnd); g_cli_gl_hwnd = nullptr; }
 }
 #endif

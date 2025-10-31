@@ -50,6 +50,10 @@ static void print_supported_backends() {
 #if defined(XR_USE_GRAPHICS_API_D3D12)
 	printf("%sD3D12", first?"":"; "); first=false;
 #endif
+#if defined(XR_USE_GRAPHICS_API_VULKAN)
+	printf("%sVulkan", first?"":"; "); first=false;
+#endif
+	printf("%sHeadless", first?"":"; "); first=false;
 	if (first) printf("(none)\n"); else printf("\n");
 }
 
@@ -122,6 +126,7 @@ void app_cli(int32_t arg_count, const char **args) {
 			else if (strcmp_nocase(val, "d3d11"  ) == 0) settings.graphics_preference = xr_gfx_d3d11;
 			else if (strcmp_nocase(val, "opengl" ) == 0) settings.graphics_preference = xr_gfx_opengl;
 			else if (strcmp_nocase(val, "d3d12"  ) == 0) settings.graphics_preference = xr_gfx_d3d12;
+			else if (strcmp_nocase(val, "vulkan" ) == 0) settings.graphics_preference = xr_gfx_auto; // not implemented; treat as auto
 		} else if (strcmp_nocase("xrGraphics", curr) == 0) {
 			if (i + 1 < (size_t)arg_count) {
 				const char* val = args[++i];
@@ -131,6 +136,7 @@ void app_cli(int32_t arg_count, const char **args) {
 					else if (strcmp_nocase(val, "d3d11"  ) == 0) settings.graphics_preference = xr_gfx_d3d11;
 					else if (strcmp_nocase(val, "opengl" ) == 0) settings.graphics_preference = xr_gfx_opengl;
 					else if (strcmp_nocase(val, "d3d12"  ) == 0) settings.graphics_preference = xr_gfx_d3d12;
+					else if (strcmp_nocase(val, "vulkan" ) == 0) settings.graphics_preference = xr_gfx_auto; // not implemented
 				}
 			}
 		} else if (has_prefix && (strncmp(curr, "loaderDebug=", 12) == 0)) {

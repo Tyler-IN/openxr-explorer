@@ -5,8 +5,9 @@
 #if defined(_WIN32)
 #define XR_USE_GRAPHICS_API_D3D11
 #define XR_USE_GRAPHICS_API_D3D12
+#define XR_USE_GRAPHICS_API_OPENGL
 #endif
-#if defined(SKG_OPENGL)
+#if defined(__linux__) && defined(SKG_OPENGL)
 #define XR_USE_GRAPHICS_API_OPENGL
 #endif
 
