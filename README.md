@@ -23,6 +23,23 @@ It can be handy to know what to expect when requesting data from OpenXR! This to
 
 Just about everything you see in the GUI is also available in text format when used from the command line! If you provide the openxr-explorer application with function or type names as arguments, it'll just dump the results as text to the console instead of launching the GUI. Who needs this? I don't know! I sure didn't, but I hope someone else does :)
 
+CLI flags:
+- `-help` | `-h`: Show help for CLI usage.
+- `-session`: Create an XrSession in CLI mode. Needed for queries that require a Session (e.g., view config views, reference spaces on some runtimes).
+- `-gpuLogLevel <level>` | `-gpuLogLevel=<level>`: Control GPU/renderer (sk_gpu) log verbosity printed by CLI.
+  - Levels: info, warn (default), error.
+- `-loaderDebug <level>` | `-loaderDebug=<level>`: Control OpenXR Loader verbosity via `XR_LOADER_DEBUG`.
+  - Default is error if not already set. Levels: error, warn, info, verbose, trace.
+- `-loaderLogFile <path>` | `-loaderLogFile=<path>`: Redirect OpenXR Loader logs to a file via `XR_LOADER_LOG_FILE`.
+- And many more! See `-help` for details.
+
+Examples:
+```
+openxr-explorer -session -xrEnumerateReferenceSpaces
+openxr-explorer -session -gpuLogLevel info -xrEnumerateViewConfigurationViews
+openxr-explorer -session -loaderDebug info -loaderLogFile loader.log -xrEnumerateInstanceExtensionProperties
+```
+
 ### Building
 If you just want to use it, see the [Releases](https://github.com/maluoi/openxr-explorer/releases) tab! If you want to build it or modify it, then OpenXR Explorer uses cmake.
 

@@ -5,9 +5,21 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <ctype.h>
+#include <stdlib.h>
+#include <string.h>
 
-// File-scope flag for CLI verbosity (used by non-capturing log callback)
-static bool g_cli_verbose_logs = false;
+// File-scope minimum GPU log level for CLI (used by non-capturing log callback)
+// skg_log_ enum order: info < warning < critical
+static int g_cli_gpu_min_log_level = 1; // default: warn (prints warnings and critical)
+
+// Helper to set environment variables cross-platform
+static void set_env_var(const char* name, const char* value) {
+#if defined(_WIN32)
+	_putenv_s(name, value);
+#else
+	setenv(name, value, 1);
+#endif
+}
 
 /*** Types *******************************/
 
@@ -31,23 +43,69 @@ void app_cli(int32_t arg_count, const char **args) {
 	settings.allow_session = false;
 	settings.form          = XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY;
 
-	g_cli_verbose_logs = false;
+	g_cli_gpu_min_log_level = 1; // warn by default
+
+	// Loader logging controls
+	const char* loader_level_cli = NULL; // if provided, sets XR_LOADER_DEBUG
+	const char* loader_log_file  = NULL; // if provided, sets XR_LOADER_LOG_FILE
 
 	// Pre-scan args for flags that affect initialization behavior
 	for (size_t i = 1; i < (size_t)arg_count; i++) {
-		const char *curr = args[i];
-		if (!curr) continue;
+		const char *raw = args[i];
+		if (!raw) continue;
+		bool has_prefix = (raw[0] == '-' || raw[0] == '/');
+		const char *curr = raw;
 		while (*curr == '-' || *curr == '/') curr++;
+
 		if (strcmp_nocase("session", curr) == 0 || strcmp_nocase("enableSession", curr) == 0) {
 			settings.allow_session = true;
-		} else if (strcmp_nocase("verbose", curr) == 0 || strcmp_nocase("v", curr) == 0) {
-			g_cli_verbose_logs = true;
+		} else if (has_prefix && (strncmp(curr, "gpuLogLevel=", 12) == 0)) {
+			const char* level = curr + 12;
+			if      (strcmp_nocase(level, "info" ) == 0) g_cli_gpu_min_log_level = 0; // print all
+			else if (strcmp_nocase(level, "warn" ) == 0) g_cli_gpu_min_log_level = 1; // default
+			else if (strcmp_nocase(level, "error") == 0) g_cli_gpu_min_log_level = 2; // critical only
+		} else if (strcmp_nocase("gpuLogLevel", curr) == 0) {
+			// Accept next arg as level
+			if (i + 1 < (size_t)arg_count) {
+				const char* level = args[++i];
+				if (level && !(level[0] == '-' || level[0] == '/')) {
+					if      (strcmp_nocase(level, "info" ) == 0) g_cli_gpu_min_log_level = 0;
+					else if (strcmp_nocase(level, "warn" ) == 0) g_cli_gpu_min_log_level = 1;
+					else if (strcmp_nocase(level, "error") == 0) g_cli_gpu_min_log_level = 2;
+				}
+			}
+		} else if (has_prefix && (strncmp(curr, "loaderDebug=", 12) == 0)) {
+			loader_level_cli = curr + 12; // value after '='
+		} else if (strcmp_nocase("loaderDebug", curr) == 0) {
+			// Accept next arg as level
+			if (i + 1 < (size_t)arg_count) {
+				loader_level_cli = args[++i];
+				if (loader_level_cli && (loader_level_cli[0] == '-' || loader_level_cli[0] == '/')) loader_level_cli = NULL;
+			}
+		} else if (has_prefix && (strncmp(curr, "loaderLogFile=", 14) == 0)) {
+			loader_log_file = curr + 14;
+		} else if (strcmp_nocase("loaderLogFile", curr) == 0) {
+			if (i + 1 < (size_t)arg_count) {
+				loader_log_file = args[++i];
+				if (loader_log_file && (loader_log_file[0] == '-' || loader_log_file[0] == '/')) loader_log_file = NULL;
+			}
 		}
 	}
 
-	// Default CLI to non-verbose: suppress info-level logs unless -verbose is provided.
+	// Default Loader logs to errors-only unless caller explicitly set via CLI or already in env
+	if (loader_level_cli && *loader_level_cli) {
+		set_env_var("XR_LOADER_DEBUG", loader_level_cli);
+	} else if (!getenv("XR_LOADER_DEBUG")) {
+		set_env_var("XR_LOADER_DEBUG", "error");
+	}
+	// Optional redirection of loader logs
+	if (loader_log_file && *loader_log_file) {
+		set_env_var("XR_LOADER_LOG_FILE", loader_log_file);
+	}
+
+	// GPU log filtering for CLI
 	skg_callback_log([](skg_log_ level, const char *text) {
-		if (g_cli_verbose_logs || level != skg_log_info) {
+		if ((int)level >= g_cli_gpu_min_log_level) {
 			printf("[%d] %s\n", level, text);
 		}
 	});
@@ -101,7 +159,17 @@ Options:
 	-help	Show this help information!
 	-session	Create an XrSession in CLI mode (needed for queries that require a Session)
 	-enableSession	Alias for -session
-	-verbose | -v	Show verbose (info-level) GPU logs in CLI
+	-gpuLogLevel <level> | -gpuLogLevel=<level>
+		Set GPU log verbosity for CLI (sk_gpu): info, warn (default), error
+	-loaderDebug <level> | -loaderDebug=<level>
+		Set OpenXR Loader log level (XR_LOADER_DEBUG): error (default), warn, info, verbose, trace
+	-loaderLogFile <path> | -loaderLogFile=<path>
+		Redirect OpenXR Loader logs to a file (XR_LOADER_LOG_FILE)
+
+Notes:
+	- By default, CLI prints GPU warnings and errors only (gpuLogLevel=warn).
+	- By default, if XR_LOADER_DEBUG is not set in the environment, CLI runs with XR_LOADER_DEBUG=error
+	  to suppress loader chatter. Use -loaderDebug to override.
 
 )_");
 	printf("\tFUNCTIONS\n");
