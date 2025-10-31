@@ -25,11 +25,55 @@ jobs:
       if: matrix.os == 'ubuntu-latest'
       run: sudo apt-get install libxcb-keysyms1-dev libxcb1-dev libxcb-xfixes0-dev libxcb-cursor-dev libxcb-xkb-dev libxcb-glx0-dev libxcb-randr0-dev libx11-xcb-dev libglew-dev
 
-    - name: Configure CMake
-      run: cmake -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}}
+    - name: Prepare logs folder (Windows)
+      if: matrix.os == 'windows-latest'
+      run: New-Item -ItemType Directory -Force -Path logs | Out-Null
+      shell: pwsh
 
-    - name: Build
-      run: cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}} --parallel 8
+    - name: Prepare logs folder (Linux)
+      if: matrix.os == 'ubuntu-latest'
+      run: mkdir -p logs
+      shell: bash
+
+    - name: Configure CMake (Windows)
+      if: matrix.os == 'windows-latest'
+      run: |
+        cmake -B $Env:GITHUB_WORKSPACE/build -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} 2>&1 | Tee-Object -FilePath logs/configure-windows.log
+      shell: pwsh
+
+    - name: Configure CMake (Linux)
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        cmake -B $GITHUB_WORKSPACE/build -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} 2>&1 | tee logs/configure-linux.log
+      shell: bash
+
+    - name: Build (Windows)
+      if: matrix.os == 'windows-latest'
+      run: |
+        cmake --build $Env:GITHUB_WORKSPACE/build --config ${{env.BUILD_TYPE}} --parallel 8 2>&1 | Tee-Object -FilePath logs/build-windows.log
+      shell: pwsh
+
+    - name: Build (Linux)
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        cmake --build $GITHUB_WORKSPACE/build --config ${{env.BUILD_TYPE}} --parallel 8 2>&1 | tee logs/build-linux.log
+      shell: bash
+
+    - name: Collect CMake logs (Windows)
+      if: matrix.os == 'windows-latest'
+      run: |
+        Copy-Item -Force (Join-Path build 'CMakeCache.txt') logs/ -ErrorAction SilentlyContinue
+        Copy-Item -Force (Join-Path build 'CMakeFiles/CMakeOutput.log') logs/ -ErrorAction SilentlyContinue
+        Copy-Item -Force (Join-Path build 'CMakeFiles/CMakeError.log')  logs/ -ErrorAction SilentlyContinue
+      shell: pwsh
+
+    - name: Collect CMake logs (Linux)
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        cp -f build/CMakeCache.txt logs/ 2>/dev/null || true
+        cp -f build/CMakeFiles/CMakeOutput.log logs/ 2>/dev/null || true
+        cp -f build/CMakeFiles/CMakeError.log  logs/ 2>/dev/null || true
+      shell: bash
 
     - name: Pack
       run: |
@@ -43,11 +87,18 @@ jobs:
         Compress-Archive -Force -Path $paths -DestinationPath $fileName
       shell: pwsh
 
-    - name: Publish
+    - name: Publish binaries
       uses: actions/upload-artifact@v4
       with:
         name: ${{ matrix.os }}
         path: "*.zip"
+
+    - name: Publish logs (always)
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: logs-${{ matrix.os }}
+        path: logs/**
 
   publish:
     needs: build

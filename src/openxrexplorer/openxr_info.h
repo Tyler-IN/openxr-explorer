@@ -43,10 +43,20 @@ struct display_table_t {
 	array_t<display_item_t> cols[3];
 };
 
+// Runtime-selectable graphics preference for OpenXR session
+enum xr_graphics_preference_t {
+	xr_gfx_auto = 0,
+	xr_gfx_headless,
+	xr_gfx_d3d11,
+	xr_gfx_opengl,
+	xr_gfx_d3d12,
+};
+
 struct xr_settings_t {
-	XrViewConfigurationType view_config;
-	XrFormFactor            form;
-	bool                    allow_session;
+	XrViewConfigurationType   view_config;
+	XrFormFactor              form;
+	bool                      allow_session;
+	xr_graphics_preference_t  graphics_preference; // new
 };
 
 struct xr_enum_info_t {

@@ -1,10 +1,18 @@
 #include "openxr_info.h"
 #include "openxr_properties.h"
-
-#if defined(__linux__)
-#include <GL/glxew.h>
+#if defined(__linux__) && defined(SKG_OPENGL)
+#include <X11/Xlib.h>
+#include <GL/glx.h>
 #endif
-
+#if defined(XR_USE_GRAPHICS_API_D3D11)
+#include <d3d11.h>
+#include <dxgi1_2.h>
+#pragma comment(lib, "d3d11.lib")
+#pragma comment(lib, "dxgi.lib")
+// Make the D3D11 helper visible before use
+static ID3D11Device* g_cli_d3d11_device = nullptr;
+static ID3D11Device* create_d3d11_device_for_luid(LUID luid, D3D_FEATURE_LEVEL min_level);
+#endif
 #include <openxr/openxr_platform.h>
 #include <openxr/openxr_reflection.h>
 
@@ -42,9 +50,9 @@ const char* xr_runtime_name = "No runtime set";
 
 /*** Signatures **************************/
 
-void openxr_init_instance(array_t<XrExtensionProperties> extensions);
+void openxr_init_instance(array_t<XrExtensionProperties> extensions, xr_settings_t settings);
 void openxr_init_system  (XrFormFactor form);
-void openxr_init_session ();
+void openxr_init_session (xr_settings_t settings);
 
 xr_extensions_t openxr_load_exts      ();
 xr_properties_t openxr_load_properties();
@@ -61,7 +69,7 @@ void openxr_info_reload(xr_settings_t settings) {
 	openxr_info_release();
 
 	xr_extensions = openxr_load_exts();
-	openxr_init_instance(xr_extensions.extensions);
+	openxr_init_instance(xr_extensions.extensions, settings);
 	openxr_init_system  (settings.form);
 	xr_properties = openxr_load_properties();
 	xr_view       = openxr_load_view      (settings.view_config);
@@ -97,6 +105,9 @@ void openxr_info_release() {
 
 	if (xr_session)  xrDestroySession (xr_session);
 	if (xr_instance) xrDestroyInstance(xr_instance);
+#if defined(XR_USE_GRAPHICS_API_D3D11)
+	if (g_cli_d3d11_device) { g_cli_d3d11_device->Release(); g_cli_d3d11_device = nullptr; }
+#endif
 
 	xr_session      = XR_NULL_HANDLE;
 	xr_instance     = XR_NULL_HANDLE;
@@ -154,22 +165,65 @@ const char *new_string(const char *format, ...) {
 
 ///////////////////////////////////////////
 
-void openxr_init_instance(array_t<XrExtensionProperties> extensions) {
+void openxr_init_instance(array_t<XrExtensionProperties> extensions, xr_settings_t settings) {
 	if (xr_instance != XR_NULL_HANDLE || xr_instance_err != nullptr)
 		return;
 
 	array_t<const char *> exts = {};
-#if defined(XR_USE_GRAPHICS_API_OPENGL)
-	exts.add(XR_KHR_OPENGL_ENABLE_EXTENSION_NAME);
-#elif defined(XR_USE_GRAPHICS_API_OPENGL_ES)
-	exts.add(XR_KHR_OPENGL_ES_ENABLE_EXTENSION_NAME);
-#elif defined(XR_USE_GRAPHICS_API_D3D11)
-	exts.add(XR_KHR_D3D11_ENABLE_EXTENSION_NAME);
-#endif
 
-	exts.clear();
+	// Headless requested: enable XR_MND_headless if present
+	if (settings.graphics_preference == xr_gfx_headless) {
+		for (size_t i = 0; i < extensions.count; i++) {
+			if (strcmp(extensions[i].extensionName, XR_MND_HEADLESS_EXTENSION_NAME) == 0) {
+				exts.add(XR_MND_HEADLESS_EXTENSION_NAME);
+				break;
+			}
+		}
+	}
+
+	// Include the requested graphics extension unless headless was explicitly requested
+	if (settings.graphics_preference != xr_gfx_headless) {
+#if defined(XR_USE_GRAPHICS_API_D3D11)
+		bool want_d3d11 = (settings.graphics_preference == xr_gfx_d3d11) || (settings.graphics_preference == xr_gfx_auto);
+		if (want_d3d11) {
+			for (size_t i = 0; i < extensions.count; i++) {
+				if (strcmp(extensions[i].extensionName, XR_KHR_D3D11_ENABLE_EXTENSION_NAME) == 0) {
+					exts.add(XR_KHR_D3D11_ENABLE_EXTENSION_NAME);
+					break;
+				}
+			}
+		}
+#endif
+#if defined(XR_USE_GRAPHICS_API_OPENGL)
+		bool want_gl = (settings.graphics_preference == xr_gfx_opengl) || (settings.graphics_preference == xr_gfx_auto);
+		if (want_gl) {
+			for (size_t i = 0; i < extensions.count; i++) {
+				if (strcmp(extensions[i].extensionName, XR_KHR_OPENGL_ENABLE_EXTENSION_NAME) == 0) {
+					exts.add(XR_KHR_OPENGL_ENABLE_EXTENSION_NAME);
+					break;
+				}
+			}
+		}
+#endif
+#if defined(XR_USE_GRAPHICS_API_D3D12)
+		bool want_d3d12 = (settings.graphics_preference == xr_gfx_d3d12);
+		if (want_d3d12) {
+			for (size_t i = 0; i < extensions.count; i++) {
+				if (strcmp(extensions[i].extensionName, XR_KHR_D3D12_ENABLE_EXTENSION_NAME) == 0) {
+					exts.add(XR_KHR_D3D12_ENABLE_EXTENSION_NAME);
+					break;
+				}
+			}
+		}
+#endif
+	}
+
+	// Optionally include debug utils if available
 	for (size_t i = 0; i < extensions.count; i++) {
-		exts.add(extensions[i].extensionName);
+		if (strcmp(extensions[i].extensionName, XR_EXT_DEBUG_UTILS_EXTENSION_NAME) == 0) {
+			exts.add(XR_EXT_DEBUG_UTILS_EXTENSION_NAME);
+			break;
+		}
 	}
 
 	XrInstanceCreateInfo create_info = { XR_TYPE_INSTANCE_CREATE_INFO };
@@ -217,54 +271,78 @@ void openxr_init_system(XrFormFactor form) {
 
 ///////////////////////////////////////////
 
-void openxr_init_session() {
-	if (xr_instance_err != nullptr) {
-		xr_session_err = "No XrInstance available";
-		return;
-	}
-	if (xr_system_err != nullptr) {
-		xr_session_err = "No XrSystemId available";
-		return;
-	}
-	if (xr_session != XR_NULL_HANDLE || xr_session_err != nullptr)
-		return;
+void openxr_init_session(xr_settings_t settings) {
+	if (xr_instance_err != nullptr) { xr_session_err = "No XrInstance available"; return; }
+	if (xr_system_err   != nullptr) { xr_session_err = "No XrSystemId available"; return; }
+	if (xr_session != XR_NULL_HANDLE || xr_session_err != nullptr) return;
 
 	skg_platform_data_t platform = skg_get_platform_data();
-#if defined(SKG_OPENGL) && defined(__linux__)
-	PFN_xrGetOpenGLGraphicsRequirementsKHR ext_xrGetOpenGLGraphicsRequirementsKHR;
-	XrGraphicsRequirementsOpenGLKHR        requirement = { XR_TYPE_GRAPHICS_REQUIREMENTS_OPENGL_KHR };
-	XrGraphicsBindingOpenGLXlibKHR         gfx_binding = { XR_TYPE_GRAPHICS_BINDING_OPENGL_XLIB_KHR };
-	gfx_binding.xDisplay    = (Display*  )platform._x_display;
-	gfx_binding.visualid    = *(uint32_t *)platform._visual_id;
-	gfx_binding.glxFBConfig = (GLXFBConfig)platform._glx_fb_config;
-	gfx_binding.glxDrawable = (GLXDrawable)platform._glx_drawable;
-	gfx_binding.glxContext  = (GLXContext )platform._glx_context;
-	xrGetInstanceProcAddr(xr_instance, "xrGetOpenGLGraphicsRequirementsKHR", (PFN_xrVoidFunction *)(&ext_xrGetOpenGLGraphicsRequirementsKHR));
-	ext_xrGetOpenGLGraphicsRequirementsKHR(xr_instance, xr_system_id, &requirement);
-#elif defined(SKG_OPENGL) && defined(_WIN32)
-	XrGraphicsBindingOpenGLKHR gfx_binding = { XR_TYPE_GRAPHICS_BINDING_OPENGL_KHR };
-	gfx_binding.hDC   = (HDC  )platform._gl_hdc;
-	gfx_binding.hGLRC = (HGLRC)platform._gl_hrc;
-#elif defined(XR_USE_GRAPHICS_API_D3D11)
-	PFN_xrGetD3D11GraphicsRequirementsKHR ext_xrGetD3D11GraphicsRequirementsKHR;
-	XrGraphicsRequirementsD3D11KHR        requirement = { XR_TYPE_GRAPHICS_REQUIREMENTS_D3D11_KHR };
-	XrGraphicsBindingD3D11KHR             gfx_binding = { XR_TYPE_GRAPHICS_BINDING_D3D11_KHR };
-	xrGetInstanceProcAddr(xr_instance, "xrGetD3D11GraphicsRequirementsKHR", (PFN_xrVoidFunction *)(&ext_xrGetD3D11GraphicsRequirementsKHR));
-	ext_xrGetD3D11GraphicsRequirementsKHR(xr_instance, xr_system_id, &requirement);
-	gfx_binding.device = (ID3D11Device*)platform._d3d11_device;
+
+	bool try_headless = (settings.graphics_preference == xr_gfx_headless);
+	bool has_headless = openxr_has_ext("XR_MND_headless");
+	void* binding_ptr = nullptr;
+
+	if (!(try_headless && has_headless)) {
+#if defined(XR_USE_GRAPHICS_API_D3D11)
+		if (settings.graphics_preference == xr_gfx_auto || settings.graphics_preference == xr_gfx_d3d11) {
+			PFN_xrGetD3D11GraphicsRequirementsKHR ext_xrGetD3D11GraphicsRequirementsKHR;
+			XrGraphicsRequirementsD3D11KHR        requirement = { XR_TYPE_GRAPHICS_REQUIREMENTS_D3D11_KHR };
+			xrGetInstanceProcAddr(xr_instance, "xrGetD3D11GraphicsRequirementsKHR", (PFN_xrVoidFunction *)(&ext_xrGetD3D11GraphicsRequirementsKHR));
+			ext_xrGetD3D11GraphicsRequirementsKHR(xr_instance, xr_system_id, &requirement);
+
+			if (g_cli_d3d11_device) { g_cli_d3d11_device->Release(); g_cli_d3d11_device = nullptr; }
+			g_cli_d3d11_device = create_d3d11_device_for_luid(requirement.adapterLuid, requirement.minFeatureLevel);
+			if (!g_cli_d3d11_device) { xr_session_err = "Failed to create D3D11 device for XR"; return; }
+
+			XrGraphicsBindingD3D11KHR *binding = new XrGraphicsBindingD3D11KHR{ XR_TYPE_GRAPHICS_BINDING_D3D11_KHR };
+			binding->device = g_cli_d3d11_device;
+			binding_ptr = binding;
+		}
 #endif
+#if defined(SKG_OPENGL) && defined(_WIN32)
+		if (!binding_ptr && (settings.graphics_preference == xr_gfx_auto || settings.graphics_preference == xr_gfx_opengl)) {
+			XrGraphicsBindingOpenGLKHR *binding = new XrGraphicsBindingOpenGLKHR{ XR_TYPE_GRAPHICS_BINDING_OPENGL_KHR };
+			binding->hDC   = (HDC  )platform._gl_hdc;
+			binding->hGLRC = (HGLRC)platform._gl_hrc;
+			binding_ptr = binding;
+		}
+#endif
+#if defined(SKG_OPENGL) && defined(__linux__)
+		if (!binding_ptr && (settings.graphics_preference == xr_gfx_auto || settings.graphics_preference == xr_gfx_opengl)) {
+			PFN_xrGetOpenGLGraphicsRequirementsKHR ext_xrGetOpenGLGraphicsRequirementsKHR;
+			XrGraphicsRequirementsOpenGLKHR        requirement = { XR_TYPE_GRAPHICS_REQUIREMENTS_OPENGL_KHR };
+			XrGraphicsBindingOpenGLXlibKHR         *binding = new XrGraphicsBindingOpenGLXlibKHR{ XR_TYPE_GRAPHICS_BINDING_OPENGL_XLIB_KHR };
+			binding->xDisplay    = (Display*  )platform._x_display;
+			binding->visualid    = *(uint32_t *)platform._visual_id;
+			binding->glxFBConfig = (GLXFBConfig)platform._glx_fb_config;
+			binding->glxDrawable = (GLXDrawable)platform._glx_drawable;
+			binding->glxContext  = (GLXContext )platform._glx_context;
+			xrGetInstanceProcAddr(xr_instance, "xrGetOpenGLGraphicsRequirementsKHR", (PFN_xrVoidFunction *)(&ext_xrGetOpenGLGraphicsRequirementsKHR));
+			ext_xrGetOpenGLGraphicsRequirementsKHR(xr_instance, xr_system_id, &requirement);
+			binding_ptr = binding;
+		}
+#endif
+		if (!binding_ptr && !has_headless) { xr_session_err = "Requested graphics backend not available in this build"; return; }
+	}
 
 	XrSessionCreateInfo session_info = { XR_TYPE_SESSION_CREATE_INFO };
-	session_info.next     = &gfx_binding;
+	session_info.next     = binding_ptr;
 	session_info.systemId = xr_system_id;
-
-	// If the headless extension is present, we don't need a graphics binding!
-	if (openxr_has_ext("XR_MND_headless"))
-		session_info.next = nullptr;
+	if (try_headless && has_headless) session_info.next = nullptr;
 
 	XrResult result = xrCreateSession(xr_instance, &session_info, &xr_session);
-	if (XR_FAILED(result)) {
-		xr_session_err = openxr_result_string(result);
+	if (XR_FAILED(result)) { xr_session_err = openxr_result_string(result); }
+
+	if (binding_ptr) {
+#if defined(XR_USE_GRAPHICS_API_D3D11)
+		if (((XrBaseInStructure*)binding_ptr)->type == XR_TYPE_GRAPHICS_BINDING_D3D11_KHR) delete (XrGraphicsBindingD3D11KHR*)binding_ptr;
+#endif
+#if defined(SKG_OPENGL) && defined(_WIN32)
+		if (((XrBaseInStructure*)binding_ptr)->type == XR_TYPE_GRAPHICS_BINDING_OPENGL_KHR) delete (XrGraphicsBindingOpenGLKHR*)binding_ptr;
+#endif
+#if defined(SKG_OPENGL) && defined(__linux__)
+		if (((XrBaseInStructure*)binding_ptr)->type == XR_TYPE_GRAPHICS_BINDING_OPENGL_XLIB_KHR) delete (XrGraphicsBindingOpenGLXlibKHR*)binding_ptr;
+#endif
 	}
 }
 
@@ -476,7 +554,7 @@ void openxr_load_enums(xr_settings_t settings) {
 			requires_session = requires_session || xr_misc_enums[i].requires_session;
 		}
 		if (requires_session) {
-			openxr_init_session();
+			openxr_init_session(settings);
 		}
 	} else if (!xr_session_err) {
 		xr_session_err = "Reload with Session enabled";
@@ -792,3 +870,44 @@ void openxr_register_enums() {
 	};
 	xr_misc_enums.add(info);
 }
+
+// Hold a created D3D11 device for CLI binding lifetime
+#if defined(XR_USE_GRAPHICS_API_D3D11)
+static ID3D11Device* create_d3d11_device_for_luid(LUID luid, D3D_FEATURE_LEVEL min_level) {
+	IDXGIFactory1* factory = nullptr;
+	if (FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory1), (void**)&factory))) return nullptr;
+	IDXGIAdapter1* match = nullptr;
+	for (UINT i = 0; ; ++i) {
+		IDXGIAdapter1* a = nullptr;
+		if (factory->EnumAdapters1(i, &a) == DXGI_ERROR_NOT_FOUND) break;
+		DXGI_ADAPTER_DESC1 desc;
+		if (SUCCEEDED(a->GetDesc1(&desc))) {
+			if (desc.AdapterLuid.HighPart == luid.HighPart && desc.AdapterLuid.LowPart == luid.LowPart) { match = a; break; }
+		}
+		a->Release();
+	}
+	factory->Release();
+
+	D3D_FEATURE_LEVEL requested[] = {
+		D3D_FEATURE_LEVEL_12_1,
+		D3D_FEATURE_LEVEL_12_0,
+		D3D_FEATURE_LEVEL_11_1,
+		D3D_FEATURE_LEVEL_11_0,
+	};
+	UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
+	ID3D11Device* dev = nullptr;
+	ID3D11DeviceContext* ctx = nullptr;
+	if (FAILED(D3D11CreateDevice(
+		match, D3D_DRIVER_TYPE_UNKNOWN,
+		nullptr, flags,
+		requested, (UINT)(sizeof(requested)/sizeof(requested[0])),
+		D3D11_SDK_VERSION, &dev, nullptr, &ctx))) {
+		if (match) match->Release();
+		return nullptr;
+	}
+	if (ctx) ctx->Release();
+	if (match) match->Release();
+	return dev;
+}
+#endif
+

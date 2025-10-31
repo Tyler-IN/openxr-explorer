@@ -42,6 +42,7 @@ void app_cli(int32_t arg_count, const char **args) {
 	xr_settings_t settings = {};
 	settings.allow_session = false;
 	settings.form          = XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY;
+	settings.graphics_preference = xr_gfx_auto;
 
 	g_cli_gpu_min_log_level = 1; // warn by default
 
@@ -72,6 +73,24 @@ void app_cli(int32_t arg_count, const char **args) {
 					if      (strcmp_nocase(level, "info" ) == 0) g_cli_gpu_min_log_level = 0;
 					else if (strcmp_nocase(level, "warn" ) == 0) g_cli_gpu_min_log_level = 1;
 					else if (strcmp_nocase(level, "error") == 0) g_cli_gpu_min_log_level = 2;
+				}
+			}
+		} else if (has_prefix && (strncmp(curr, "xrGraphics=", 11) == 0)) {
+			const char* val = curr + 11;
+			if      (strcmp_nocase(val, "auto"    ) == 0) settings.graphics_preference = xr_gfx_auto;
+			else if (strcmp_nocase(val, "headless") == 0) settings.graphics_preference = xr_gfx_headless;
+			else if (strcmp_nocase(val, "d3d11"  ) == 0) settings.graphics_preference = xr_gfx_d3d11;
+			else if (strcmp_nocase(val, "opengl" ) == 0) settings.graphics_preference = xr_gfx_opengl;
+			else if (strcmp_nocase(val, "d3d12"  ) == 0) settings.graphics_preference = xr_gfx_d3d12;
+		} else if (strcmp_nocase("xrGraphics", curr) == 0) {
+			if (i + 1 < (size_t)arg_count) {
+				const char* val = args[++i];
+				if (val && !(val[0] == '-' || val[0] == '/')) {
+					if      (strcmp_nocase(val, "auto"    ) == 0) settings.graphics_preference = xr_gfx_auto;
+					else if (strcmp_nocase(val, "headless") == 0) settings.graphics_preference = xr_gfx_headless;
+					else if (strcmp_nocase(val, "d3d11"  ) == 0) settings.graphics_preference = xr_gfx_d3d11;
+					else if (strcmp_nocase(val, "opengl" ) == 0) settings.graphics_preference = xr_gfx_opengl;
+					else if (strcmp_nocase(val, "d3d12"  ) == 0) settings.graphics_preference = xr_gfx_d3d12;
 				}
 			}
 		} else if (has_prefix && (strncmp(curr, "loaderDebug=", 12) == 0)) {
@@ -159,6 +178,9 @@ Options:
 	-help	Show this help information!
 	-session	Create an XrSession in CLI mode (needed for queries that require a Session)
 	-enableSession	Alias for -session
+	-xrGraphics <auto|headless|d3d11|opengl|d3d12> | -xrGraphics=<value>
+		Select graphics preference for instance/session creation.
+		Default: auto (prefer compiled backend; use headless if XR_MND_headless).
 	-gpuLogLevel <level> | -gpuLogLevel=<level>
 		Set GPU log verbosity for CLI (sk_gpu): info, warn (default), error
 	-loaderDebug <level> | -loaderDebug=<level>
@@ -170,6 +192,7 @@ Notes:
 	- By default, CLI prints GPU warnings and errors only (gpuLogLevel=warn).
 	- By default, if XR_LOADER_DEBUG is not set in the environment, CLI runs with XR_LOADER_DEBUG=error
 	  to suppress loader chatter. Use -loaderDebug to override.
+	- -xrGraphics=headless attempts XR_MND_headless if the runtime supports it; otherwise falls back.
 
 )_");
 	printf("\tFUNCTIONS\n");
