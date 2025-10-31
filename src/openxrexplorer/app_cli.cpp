@@ -6,6 +6,9 @@
 #include <stdio.h>
 #include <ctype.h>
 
+// File-scope flag for CLI verbosity (used by non-capturing log callback)
+static bool g_cli_verbose_logs = false;
+
 /*** Types *******************************/
 
 struct command_t {
@@ -27,6 +30,27 @@ void app_cli(int32_t arg_count, const char **args) {
 	xr_settings_t settings = {};
 	settings.allow_session = false;
 	settings.form          = XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY;
+
+	g_cli_verbose_logs = false;
+
+	// Pre-scan args for flags that affect initialization behavior
+	for (size_t i = 1; i < (size_t)arg_count; i++) {
+		const char *curr = args[i];
+		if (!curr) continue;
+		while (*curr == '-' || *curr == '/') curr++;
+		if (strcmp_nocase("session", curr) == 0 || strcmp_nocase("enableSession", curr) == 0) {
+			settings.allow_session = true;
+		} else if (strcmp_nocase("verbose", curr) == 0 || strcmp_nocase("v", curr) == 0) {
+			g_cli_verbose_logs = true;
+		}
+	}
+
+	// Default CLI to non-verbose: suppress info-level logs unless -verbose is provided.
+	skg_callback_log([](skg_log_ level, const char *text) {
+		if (g_cli_verbose_logs || level != skg_log_info) {
+			printf("[%d] %s\n", level, text);
+		}
+	});
 
 	if (!skg_init("OpenXR Explorer", nullptr))
 		printf("Failed to init skg!\n");
@@ -75,17 +99,20 @@ Notes:	This tool shows a list of values provided from the active OpenXR
 
 Options:
 	-help	Show this help information!
+	-session	Create an XrSession in CLI mode (needed for queries that require a Session)
+	-enableSession	Alias for -session
+	-verbose | -v	Show verbose (info-level) GPU logs in CLI
 
 )_");
-	printf("	FUNCTIONS\n");
+	printf("\tFUNCTIONS\n");
 	for (size_t i = 0; i < xr_tables.count; i++) {
 		if (xr_tables[i].name_func)
-			printf("	-%s\n", xr_tables[i].name_func);
+			printf("\t-%s\n", xr_tables[i].name_func);
 	}
-	printf("\n	TYPES\n");
+	printf("\n\tTYPES\n");
 	for (size_t i = 0; i < xr_tables.count; i++) {
 		if (xr_tables[i].name_type)
-			printf("	-%s\n", xr_tables[i].name_type);
+			printf("\t-%s\n", xr_tables[i].name_type);
 	}
 }
 
