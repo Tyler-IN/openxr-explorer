@@ -38,6 +38,46 @@ int32_t strcmp_nocase(char const *a, char const *b);
 
 /*** Code ********************************/
 
+static void print_supported_backends() {
+	printf("Supported graphics backends in this build: ");
+	bool first = true;
+#if defined(XR_USE_GRAPHICS_API_D3D11)
+	printf("%sD3D11", first?"":"; "); first=false;
+#endif
+#if defined(XR_USE_GRAPHICS_API_OPENGL)
+	printf("%sOpenGL", first?"":"; "); first=false;
+#endif
+#if defined(XR_USE_GRAPHICS_API_D3D12)
+	printf("%sD3D12", first?"":"; "); first=false;
+#endif
+	if (first) printf("(none)\n"); else printf("\n");
+}
+
+static bool backend_compiled(xr_graphics_preference_t pref) {
+	switch (pref) {
+	case xr_gfx_d3d11:
+		#if defined(XR_USE_GRAPHICS_API_D3D11)
+		return true;
+		#else
+		return false;
+		#endif
+	case xr_gfx_opengl:
+		#if defined(XR_USE_GRAPHICS_API_OPENGL)
+		return true;
+		#else
+		return false;
+		#endif
+	case xr_gfx_d3d12:
+		#if defined(XR_USE_GRAPHICS_API_D3D12)
+		return true;
+		#else
+		return false;
+		#endif
+	default:
+		return true; // auto/headless always allowed for validation; runtime may reject headless
+	}
+}
+
 void app_cli(int32_t arg_count, const char **args) {
 	xr_settings_t settings = {};
 	settings.allow_session = false;
@@ -136,6 +176,14 @@ void app_cli(int32_t arg_count, const char **args) {
 	if (xr_system_err)   printf("XrSystemId error: [%s]\n", xr_system_err);
 	if (xr_session_err)  printf("XrSession error: [%s]\n", xr_session_err);
 
+	// Validate xrGraphics selection against compiled backends
+	if (!backend_compiled(settings.graphics_preference)) {
+		printf("Warning: requested -xrGraphics backend not available in this build. ");
+		print_supported_backends();
+		printf("Falling back to auto.\n");
+		settings.graphics_preference = xr_gfx_auto;
+	}
+
 	// Find all the commands we want to execute
 	bool show = false;
 	for (size_t i = 1; i < arg_count; i++) {
@@ -189,10 +237,11 @@ Options:
 		Redirect OpenXR Loader logs to a file (XR_LOADER_LOG_FILE)
 
 Notes:
-	- By default, CLI prints GPU warnings and errors only (gpuLogLevel=warn).
-	- By default, if XR_LOADER_DEBUG is not set in the environment, CLI runs with XR_LOADER_DEBUG=error
-	  to suppress loader chatter. Use -loaderDebug to override.
-	- -xrGraphics=headless attempts XR_MND_headless if the runtime supports it; otherwise falls back.
+	- Backend availability depends on this binary's build. )_");
+	print_supported_backends();
+	printf(R"_(
+	- SteamVR typically does not expose XR_MND_headless; headless requests may fall back to the compiled backend.
+	- Unrecognized values (e.g. "vulkan") are treated as auto.
 
 )_");
 	printf("\tFUNCTIONS\n");

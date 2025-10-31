@@ -80,7 +80,11 @@ if (UNIX)
         GLX )
 endif(UNIX)
 
-target_link_libraries(openxr-explorer 
+if (WIN32)
+    target_link_libraries(openxr-explorer PRIVATE d3d11 dxgi d3d12)
+endif()
+
+target_link_libraries(openxr-explorer
     PUBLIC
     xrruntime 
     PRIVATE

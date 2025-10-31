@@ -2,9 +2,11 @@
 
 #include "array.h"
 #include "imgui/sk_gpu.h"
-#if defined(SKG_DIRECT3D11)
+#if defined(_WIN32)
 #define XR_USE_GRAPHICS_API_D3D11
-#elif defined(SKG_OPENGL)
+#define XR_USE_GRAPHICS_API_D3D12
+#endif
+#if defined(SKG_OPENGL)
 #define XR_USE_GRAPHICS_API_OPENGL
 #endif
 

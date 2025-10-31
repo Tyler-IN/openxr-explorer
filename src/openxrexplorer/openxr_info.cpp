@@ -13,6 +13,15 @@
 static ID3D11Device* g_cli_d3d11_device = nullptr;
 static ID3D11Device* create_d3d11_device_for_luid(LUID luid, D3D_FEATURE_LEVEL min_level);
 #endif
+#if defined(XR_USE_GRAPHICS_API_D3D12)
+#include <d3d12.h>
+#include <dxgi1_2.h>
+#pragma comment(lib, "d3d12.lib")
+// D3D12 globals and forward decls
+static ID3D12Device*       g_cli_d3d12_device = nullptr;
+static ID3D12CommandQueue* g_cli_d3d12_queue  = nullptr;
+static ID3D12Device* create_d3d12_device_for_luid(LUID luid);
+#endif
 #include <openxr/openxr_platform.h>
 #include <openxr/openxr_reflection.h>
 
@@ -107,6 +116,10 @@ void openxr_info_release() {
 	if (xr_instance) xrDestroyInstance(xr_instance);
 #if defined(XR_USE_GRAPHICS_API_D3D11)
 	if (g_cli_d3d11_device) { g_cli_d3d11_device->Release(); g_cli_d3d11_device = nullptr; }
+#endif
+#if defined(XR_USE_GRAPHICS_API_D3D12)
+	if (g_cli_d3d12_queue) { g_cli_d3d12_queue->Release(); g_cli_d3d12_queue = nullptr; }
+	if (g_cli_d3d12_device) { g_cli_d3d12_device->Release(); g_cli_d3d12_device = nullptr; }
 #endif
 
 	xr_session      = XR_NULL_HANDLE;
@@ -206,7 +219,7 @@ void openxr_init_instance(array_t<XrExtensionProperties> extensions, xr_settings
 		}
 #endif
 #if defined(XR_USE_GRAPHICS_API_D3D12)
-		bool want_d3d12 = (settings.graphics_preference == xr_gfx_d3d12);
+		bool want_d3d12 = (settings.graphics_preference == xr_gfx_d3d12) || (settings.graphics_preference == xr_gfx_auto);
 		if (want_d3d12) {
 			for (size_t i = 0; i < extensions.count; i++) {
 				if (strcmp(extensions[i].extensionName, XR_KHR_D3D12_ENABLE_EXTENSION_NAME) == 0) {
@@ -278,10 +291,9 @@ void openxr_init_session(xr_settings_t settings) {
 
 	skg_platform_data_t platform = skg_get_platform_data();
 
+	void* binding_ptr = nullptr;
 	bool try_headless = (settings.graphics_preference == xr_gfx_headless);
 	bool has_headless = openxr_has_ext("XR_MND_headless");
-	void* binding_ptr = nullptr;
-
 	if (!(try_headless && has_headless)) {
 #if defined(XR_USE_GRAPHICS_API_D3D11)
 		if (settings.graphics_preference == xr_gfx_auto || settings.graphics_preference == xr_gfx_d3d11) {
@@ -297,6 +309,24 @@ void openxr_init_session(xr_settings_t settings) {
 			XrGraphicsBindingD3D11KHR *binding = new XrGraphicsBindingD3D11KHR{ XR_TYPE_GRAPHICS_BINDING_D3D11_KHR };
 			binding->device = g_cli_d3d11_device;
 			binding_ptr = binding;
+		}
+#endif
+#if defined(XR_USE_GRAPHICS_API_D3D12)
+		if (!binding_ptr && (settings.graphics_preference == xr_gfx_auto || settings.graphics_preference == xr_gfx_d3d12)) {
+			PFN_xrGetD3D12GraphicsRequirementsKHR extGet;
+			XrGraphicsRequirementsD3D12KHR req{ XR_TYPE_GRAPHICS_REQUIREMENTS_D3D12_KHR };
+			xrGetInstanceProcAddr(xr_instance, "xrGetD3D12GraphicsRequirementsKHR", (PFN_xrVoidFunction*)&extGet);
+			extGet(xr_instance, xr_system_id, &req);
+			if (g_cli_d3d12_device) { g_cli_d3d12_device->Release(); g_cli_d3d12_device = nullptr; }
+			if (g_cli_d3d12_queue)  { g_cli_d3d12_queue->Release();  g_cli_d3d12_queue  = nullptr; }
+			g_cli_d3d12_device = create_d3d12_device_for_luid(req.adapterLuid);
+			if (!g_cli_d3d12_device) { xr_session_err = "Failed to create D3D12 device for XR"; return; }
+			D3D12_COMMAND_QUEUE_DESC qd{ D3D12_COMMAND_LIST_TYPE_DIRECT, (INT)D3D12_COMMAND_QUEUE_PRIORITY_NORMAL, D3D12_COMMAND_QUEUE_FLAG_NONE, 0 };
+			HRESULT hr = g_cli_d3d12_device->CreateCommandQueue(&qd, __uuidof(ID3D12CommandQueue), (void**)&g_cli_d3d12_queue);
+			if (FAILED(hr) || !g_cli_d3d12_queue) { xr_session_err = "Failed to create D3D12 command queue"; return; }
+			XrGraphicsBindingD3D12KHR* bind = new XrGraphicsBindingD3D12KHR{ XR_TYPE_GRAPHICS_BINDING_D3D12_KHR };
+			bind->device = g_cli_d3d12_device; bind->queue = g_cli_d3d12_queue;
+			binding_ptr = bind;
 		}
 #endif
 #if defined(SKG_OPENGL) && defined(_WIN32)
@@ -337,6 +367,9 @@ void openxr_init_session(xr_settings_t settings) {
 #if defined(XR_USE_GRAPHICS_API_D3D11)
 		if (((XrBaseInStructure*)binding_ptr)->type == XR_TYPE_GRAPHICS_BINDING_D3D11_KHR) delete (XrGraphicsBindingD3D11KHR*)binding_ptr;
 #endif
+#if defined(XR_USE_GRAPHICS_API_D3D12)
+		if (((XrBaseInStructure*)binding_ptr)->type == XR_TYPE_GRAPHICS_BINDING_D3D12_KHR) delete (XrGraphicsBindingD3D12KHR*)binding_ptr;
+#endif
 #if defined(SKG_OPENGL) && defined(_WIN32)
 		if (((XrBaseInStructure*)binding_ptr)->type == XR_TYPE_GRAPHICS_BINDING_OPENGL_KHR) delete (XrGraphicsBindingOpenGLKHR*)binding_ptr;
 #endif
@@ -344,6 +377,7 @@ void openxr_init_session(xr_settings_t settings) {
 		if (((XrBaseInStructure*)binding_ptr)->type == XR_TYPE_GRAPHICS_BINDING_OPENGL_XLIB_KHR) delete (XrGraphicsBindingOpenGLXlibKHR*)binding_ptr;
 #endif
 	}
+	// NOTE: D3D12 device/queue are released in openxr_info_release()
 }
 
 ///////////////////////////////////////////
@@ -911,3 +945,22 @@ static ID3D11Device* create_d3d11_device_for_luid(LUID luid, D3D_FEATURE_LEVEL m
 }
 #endif
 
+#if defined(XR_USE_GRAPHICS_API_D3D12)
+static ID3D12Device* create_d3d12_device_for_luid(LUID luid) {
+	IDXGIFactory1* factory = nullptr; if (FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory1), (void**)&factory))) return nullptr;
+	IDXGIAdapter1* match = nullptr;
+	for (UINT i = 0; ; ++i) {
+		IDXGIAdapter1* a = nullptr; if (factory->EnumAdapters1(i, &a) == DXGI_ERROR_NOT_FOUND) break;
+		DXGI_ADAPTER_DESC1 desc; if (SUCCEEDED(a->GetDesc1(&desc))) {
+			if (desc.AdapterLuid.HighPart == luid.HighPart && desc.AdapterLuid.LowPart == luid.LowPart) { match = a; break; }
+		}
+		a->Release();
+	}
+	factory->Release();
+	if (!match) return nullptr;
+	ID3D12Device* dev = nullptr;
+	HRESULT hr = D3D12CreateDevice(match, D3D_FEATURE_LEVEL_11_0, __uuidof(ID3D12Device), (void**)&dev);
+	match->Release();
+	return SUCCEEDED(hr) ? dev : nullptr;
+}
+#endif
